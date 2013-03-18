@@ -1,8 +1,11 @@
-
 //Automated Photographer
 //By: Dominick C. Watts
 //Created: 11/15/2012
 //Version: 3.0
+
+//Hardware:
+//Adruino Uno
+//Adafruit WaveShield
 
 //Single push button, waveshield, IR emitter, 150 ohm resistor
 //Messages- welcome, first, count, second, count, thank you
