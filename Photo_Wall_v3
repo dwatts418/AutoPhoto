@@ -1,0 +1,324 @@
+
+//Automated Photographer
+//By: Dominick C. Watts
+//Created: 11/15/2012
+//Version: 3.0
+
+//Single push button, waveshield, IR emitter, 150 ohm resistor
+//Messages- welcome, first, count, second, count, thank you
+
+#include <FatReader.h>
+#include <SdReader.h>
+#include <avr/pgmspace.h>
+#include "WaveUtil.h"
+#include "WaveHC.h"
+
+// Some Declarations
+unsigned long TimeBetweenShots = 1000;    // Time in mS 60000 = 60 Seconds
+int IRled = 6;                // IR Output Signal to Anode of IR LED 
+// Cathode of IR LED to ground through a 150 Ohm Resistor.
+int Begin = 13;               // Indicates Shutter Start on LED
+const int readyLED = 9;            // define ready LED
+const int inprogressLED = 8;      // define in progress LED
+const int buttonPin = 7;      // Start button
+int buttonPushCounter = 0;   // counter for the number of button presses
+int buttonState = 0;         // current state of the button
+int lastButtonState = 0;     // previous state of the button
+int currentStatus = 0;      // sets the default status for the red and green LEDs
+
+//WaveShield Stuff
+SdReader card;    // This object holds the information for the card
+FatVolume vol;    // This holds the information for the partition on the card
+FatReader root;   // This holds the information for the filesystem on the card
+FatReader f;      // This holds the information for the file we're play
+
+WaveHC wave;      // This is the only wave (audio) object, since we will only play one at a time
+
+#define DEBOUNCE 100  // button debouncer
+
+// this handy function will return the number of bytes currently free in RAM, great for debugging!   
+int freeRam(void)
+{
+  extern int  __bss_end; 
+  extern int  *__brkval; 
+  int free_memory; 
+  if((int)__brkval == 0) {
+    free_memory = ((int)&free_memory) - ((int)&__bss_end); 
+  }
+  else {
+    free_memory = ((int)&free_memory) - ((int)__brkval); 
+  }
+  return free_memory; 
+} 
+
+void sdErrorCheck(void)
+{
+  if (!card.errorCode()) return;
+  putstring("\n\rSD I/O error: ");
+  Serial.print(card.errorCode(), HEX);
+  putstring(", ");
+  Serial.println(card.errorData(), HEX);
+  while(1);
+}
+
+//IR Emitter Stuff
+// Code to send Shutter release command B4B8F
+int SCodeBits[] = {
+  1,0,1,1,0,1,0,0,1,0,1,1,1,0,0,0,1,1,1,1};
+
+// Code to send 2 X delay Shutter release command ECB8F (Not used)
+int S2CodeBits[] = {
+  1,1,1,0,1,1,0,0,1,0,1,1,1,0,0,0,1,1,1,1};
+
+void setup()
+{
+  //WaveShield Stuff 
+  // set up serial port
+  Serial.begin(9600);
+  putstring_nl("WaveHC with 6 buttons");
+
+  putstring("Free RAM: ");       // This can help with debugging, running out of RAM is bad
+  Serial.println(freeRam());      // if this is under 150 bytes it may spell trouble!
+
+  // Set the output pins for the DAC control. This pins are defined in the library
+  pinMode(2, OUTPUT);
+  pinMode(3, OUTPUT);
+  pinMode(4, OUTPUT);
+  pinMode(5, OUTPUT);
+
+  //  if (!card.init(true)) { //play with 4 MHz spi if 8MHz isn't working for you
+  if (!card.init()) {         //play with 8 MHz spi (default faster!)  
+    putstring_nl("Card init. failed!");  // Something went wrong, lets print out why
+    sdErrorCheck();
+    while(1);                            // then 'halt' - do nothing!
+  }
+
+  // enable optimize read - some cards may timeout. Disable if you're having problems
+  card.partialBlockRead(true);
+
+  // Now we will look for a FAT partition!
+  uint8_t part;
+  for (part = 0; part < 5; part++) {     // we have up to 5 slots to look in
+    if (vol.init(card, part)) 
+      break;                             // we found one, lets bail
+  }
+  if (part == 5) {                       // if we ended up not finding one  :(
+    putstring_nl("No valid FAT partition!");
+    sdErrorCheck();      // Something went wrong, lets print out why
+    while(1);                            // then 'halt' - do nothing!
+  }
+
+  // Lets tell the user about what we found
+  putstring("Using partition ");
+  Serial.print(part, DEC);
+  putstring(", type is FAT");
+  Serial.println(vol.fatType(),DEC);     // FAT16 or FAT32?
+
+  // Try to open the root directory
+  if (!root.openRoot(vol)) {
+    putstring_nl("Can't open root dir!"); // Something went wrong,
+    while(1);                             // then 'halt' - do nothing!
+  }
+
+  // Whew! We got past the tough parts.
+  putstring_nl("Ready!");
+
+  //IR Emitter Stuff
+  // Setup IRLed and Begin Led Pins as outputs
+  pinMode(IRled, OUTPUT);      // sets the digital pin as output
+  pinMode(Begin, OUTPUT);      // sets the digital pin as output
+
+  //Status LEDS
+  pinMode(readyLED, OUTPUT);  // sets the digital pin as output
+  pinMode(inprogressLED, OUTPUT);  // sets the digital pin as output
+
+  //Start button Stuff
+  pinMode(buttonPin, INPUT);  //sets the digital pin as input with pullup resistor
+}
+
+// Infinite Loop 
+void loop()
+{
+  // read the state of the pushbutton value:
+  buttonState = digitalRead(buttonPin);
+  digitalWrite(readyLED, HIGH);
+
+  // compare the buttonState to its previous state
+  if (buttonState != lastButtonState) {
+    //if the state has changed, increment the counter
+
+    if (buttonState == LOW) {
+      // if the current state is LOW then the button
+      // went from off to on:
+      buttonPushCounter++;
+      Serial.println("on");
+      Serial.print("number of button pushes:  ");
+      Serial.println(buttonPushCounter);
+    } 
+    // save the current state as the last state, 
+    //for next time through the loop
+    lastButtonState = 0;
+
+    digitalWrite(readyLED, LOW);
+    digitalWrite(inprogressLED, HIGH);
+
+    //Play Welcome Message
+    playcomplete("Welcome.WAV");
+    delay(100);
+
+    //Play First Photo Message
+    playcomplete("First.WAV");
+    delay(100);
+
+    //Play Count Message
+    playcomplete("Count.WAV");
+
+    //Take First Picture
+    digitalWrite(Begin, HIGH);  // Signal Begin LED ON
+    for (int i=1; i <= 3; i++)  // Send Command 3 times as per Sony Specs
+    {
+      header();                    // Send the Start header
+      for (int i=0; i <= 19; i++)  // Loop to send the bits
+      {
+        if(SCodeBits[i] == 1)  // Is Data_is_One to be sent ?
+        {
+          Data_is_One();              // Yes, send a Data_is_One bit
+        }
+        else                  // No, Data_is_Zero to be sent
+        {
+          Data_is_Zero();              // Send a Data_is_Zero bit
+        }
+      }
+      delay(11);                  // Delay Padding to give approx 45mS between command starts
+    }
+    digitalWrite(Begin, LOW);     // Begin LED OFF
+    delay(TimeBetweenShots);      // Hang about wasting time before next shot
+
+    //Play Second Photo Message
+    playcomplete("Second.WAV");
+    delay(2000);
+
+    //Play Count Message
+    playcomplete("Count.WAV");
+
+    //Take Second Picture
+    digitalWrite(Begin, HIGH);  // Signal Begin LED ON
+    for (int i=1; i <= 3; i++)  // Send Command 3 times as per Sony Specs
+    {
+      header();                    // Send the Start header
+      for (int i=0; i <= 19; i++)  // Loop to send the bits
+      {
+        if(SCodeBits[i] == 1)  // Is Data_is_One to be sent ?
+        {
+          Data_is_One();              // Yes, send a Data_is_One bit
+        }
+        else                  // No, Data_is_Zero to be sent
+        {
+          Data_is_Zero();              // Send a Data_is_Zero bit
+        }
+      }
+      delay(11);                  // Delay Padding to give approx 45mS between command starts
+    }
+    digitalWrite(Begin, LOW);     // Begin LED OFF
+    delay(TimeBetweenShots);      // Hang about wasting time before next shot
+
+    delay(500);
+    //Play Thank You Message
+    playcomplete("Thankyou.WAV");
+
+    digitalWrite(inprogressLED, LOW);
+    digitalWrite(readyLED, HIGH);
+
+  }
+}
+// Routine to give the 40kHz burst signal
+void burst()                   // 40KHz burst
+{
+  digitalWrite(IRled, HIGH);   // sets the pin on
+  delayMicroseconds(10);       // pauses for 13 microseconds  (fudged to 10uS Delay)   
+  digitalWrite(IRled, LOW);    // sets the pin off
+  delayMicroseconds(8);        // pauses for 12 microseconds   (fudged to 8uS Delay)
+}
+
+// Routine to give a quiet period of data
+void quiet()                   // Quiet burst
+{
+  digitalWrite(IRled, LOW);    // sets the pin off
+  delayMicroseconds(10);       // pauses for 13 microseconds   (fudged to 10uS Delay)  
+  digitalWrite(IRled, LOW);    // sets the pin off
+  delayMicroseconds(8);        // pauses for 12 microseconds    (fudged to 8uS Delay)
+}
+
+// Routine to send header data burst
+// This allows the IR reciever to set its AGC (Gain)
+// Header Burst Timing is 96 * 0.025uS = 2.4mS
+// Quiet Timing is 24 * 0.025uS = 600uS
+void header() 
+{
+  for (int i=1; i <= 96; i++){
+    burst();                // 40kHz burst
+  }
+  for (int i=1; i <= 24; i++){
+    quiet();                // No 40 kHz
+  }
+}
+
+// Routine to send one data burst
+// Burst Timing is 48 * 0.025uS = 1.2mS
+// Quiet Timing is 24 * 0.025uS = 600uS
+void Data_is_One()
+{
+  for (int i=1; i <= 48; i++){
+    burst();                // 40kHz burst
+  }
+  for (int i=1; i <= 24; i++){
+    quiet();                // No 40 kHz
+  }
+}
+
+// Routine to send zero data burst
+// Burst Timing is 24 * 0.025uS = 600uS
+// Quiet Timing is 24 * 0.025uS = 600uS
+void Data_is_Zero()
+{
+  for (int i=1; i <= 24; i++){
+    burst();                // 40 kHz burst
+  }
+  for (int i=1; i <= 24; i++){
+    quiet();                // No 40 kHz 
+  }
+}
+
+// Plays a full file from beginning to end with no pause.
+void playcomplete(char *name) {
+  // call our helper to find and play this name
+  playfile(name);
+  while (wave.isplaying) {
+    // do nothing while its playing
+  }
+  // now its done playing
+}
+
+//WaveShield Case
+void playfile(char *name) {
+  // see if the wave object is currently doing something
+  if (wave.isplaying) {// already playing something, so stop it!
+    wave.stop(); // stop it
+  }
+  // look in the root directory and open the file
+  if (!f.open(root, name)) {
+    putstring("Couldn't open file "); 
+    Serial.print(name); 
+    return;
+  }
+  // OK read the file and turn it into a wave object
+  if (!wave.create(f)) {
+    putstring_nl("Not a valid WAV"); 
+    return;
+  }
+
+  // ok time to play! start playback
+  wave.play();
+}
+
+
